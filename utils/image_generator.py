@@ -1,5 +1,5 @@
 import io
-import asyncio  # 💡 재시도 대기(sleep)를 위해 추가됨
+import asyncio  # 💡 재시도 대기(sleep) 및 렌더링 스레드 오프로딩
 import aiohttp
 from PIL import Image, ImageDraw, ImageFont
 import discord
@@ -45,7 +45,38 @@ def draw_progress_bar(draw, x, y, width, height, progress, bg_color, fill_color)
     if fill_width > 0:
         draw.rectangle([x, y, x + fill_width, y + height], fill=fill_color)
 
+
 async def generate_status_image(data, points, buffs, is_annoyed, is_diseased, current_idx, total_pets):
+    """펫 상태창 이미지를 생성합니다.
+
+    네트워크(원격 이미지 다운로드)는 여기서 async로 미리 처리하고,
+    CPU 부하가 큰 실제 PIL 렌더링은 asyncio.to_thread 로 별도 스레드에 넘겨
+    이벤트 루프(봇 응답)가 멈추지 않도록 합니다. (수천 명 규모 대비)
+    """
+    rarity = data.get('rarity', '서사')
+    pet_type = data.get('type', '알 수 없음')
+
+    # --- 원격 이미지 미리 다운로드 (네트워크 = async, 캐시됨) ---
+    rarity_img = None
+    rarity_url = RARITY_IMAGES.get(rarity)
+    if rarity_url:
+        rarity_img = await fetch_image(rarity_url)
+
+    pet_img = None
+    pet_url = PET_IMAGES.get(pet_type)
+    if pet_url:
+        pet_img = await fetch_image(pet_url)
+
+    # --- CPU 바운드 렌더링은 스레드로 오프로딩 ---
+    return await asyncio.to_thread(
+        _render_status_image,
+        data, points, buffs, is_annoyed, is_diseased,
+        current_idx, total_pets, rarity_img, pet_img,
+    )
+
+
+def _render_status_image(data, points, buffs, is_annoyed, is_diseased, current_idx, total_pets, rarity_img, pet_img):
+    """(동기) 실제 PIL 렌더링. generate_status_image 가 스레드에서 호출합니다."""
     # 1. 1200x700 해상도로 캔버스 강제 고정
     try:
         bg = Image.open("assets/profile_bg.png").convert("RGBA")
@@ -84,15 +115,10 @@ async def generate_status_image(data, points, buffs, is_annoyed, is_diseased, cu
         title_text = f"[{rarity}급] {pet_type_clean}의 상태창 ({current_idx + 1}/{total_pets})"
 
     # --- 1. 등급 아이콘 & 상단 제목 ---
-    rarity_url = RARITY_IMAGES.get(rarity)
-    if rarity_url:
-        rarity_img = await fetch_image(rarity_url)
-        if rarity_img:
-            rarity_img = rarity_img.resize((40, 40))
-            bg.paste(rarity_img, (300, 137), rarity_img)
-            draw.text((350, 142), title_text, font=font_title, fill=(255, 230, 150), stroke_width=1, stroke_fill="black")
-        else:
-            draw.text((300, 142), title_text, font=font_title, fill=(255, 230, 150), stroke_width=1, stroke_fill="black")
+    if rarity_img:
+        rarity_img = rarity_img.resize((40, 40))
+        bg.paste(rarity_img, (300, 137), rarity_img)
+        draw.text((350, 142), title_text, font=font_title, fill=(255, 230, 150), stroke_width=1, stroke_fill="black")
     else:
         draw.text((300, 142), title_text, font=font_title, fill=(255, 230, 150), stroke_width=1, stroke_fill="black")
 
@@ -145,13 +171,10 @@ async def generate_status_image(data, points, buffs, is_annoyed, is_diseased, cu
         wrapped_buffs = textwrap.fill(buff_str, width=22)
         draw.text((580, 532), wrapped_buffs, font=font_small, fill=(150, 255, 150), stroke_width=1, stroke_fill="black")
 
-    # --- 7. 메인 펫 이미지 (원본 pet_type으로 캐싱 및 다운로드) ---
-    pet_url = PET_IMAGES.get(pet_type)
-    if pet_url:
-        pet_img_downloaded = await fetch_image(pet_url)
-        if pet_img_downloaded:
-            pet_img_downloaded = pet_img_downloaded.resize((180, 180))
-            bg.paste(pet_img_downloaded, (300, 192), pet_img_downloaded)
+    # --- 7. 메인 펫 이미지 ---
+    if pet_img:
+        pet_img = pet_img.resize((180, 180))
+        bg.paste(pet_img, (300, 192), pet_img)
 
     # --- 이미지를 discord.File 형태로 변환 ---
     buffer = io.BytesIO()
