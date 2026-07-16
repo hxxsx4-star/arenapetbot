@@ -207,7 +207,7 @@ class LegendActionView(discord.ui.View):
         if gained_exp > 0: log_desc += f"📈 획득 경험치: +{gained_exp} XP\n"
         if found_eggs: log_desc += f"🥚 획득한 알: {', '.join(found_eggs)}급 알\n"
         if found_items: log_desc += f"🎁 획득한 아이템: {', '.join([i[1] for i in found_items])}\n"
-        await send_log_embed(interaction.client, WALK_LOG_CH, "👟 산책 로그", log_desc.strip(), interaction.user, discord.Color.green(), f"구분: {num_walks}회 산책")
+        await send_log_embed(interaction.client, WALK_LOG_CH, "👟 산책 로그", log_desc.strip(), interaction.user, discord.Color.green(), f"구분: {num_walks}회 산책", guild=interaction.guild)
 
     @discord.ui.button(label="1회 산책 (1P)", style=discord.ButtonStyle.success, emoji="🚶", row=1)
     async def walk_1(self, interaction: discord.Interaction, button: discord.ui.Button): await self.handle_walk(interaction, 1)
