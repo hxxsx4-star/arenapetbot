@@ -53,7 +53,7 @@ class HatchView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=None)
 
         cost = 0 if self.is_first_time else 1000
-        await send_log_embed(interaction.client, HATCH_LOG_CH, "🥚 알까기 로그", f"{self.pet_name} ({selected_type} - {self.rarity}급) 부화 완료!\n💸 소모 비용: {cost}P", interaction.user, discord.Color.purple())
+        await send_log_embed(interaction.client, HATCH_LOG_CH, "🥚 알까기 로그", f"{self.pet_name} ({selected_type} - {self.rarity}급) 부화 완료!\n💸 소모 비용: {cost}P", interaction.user, discord.Color.purple(), guild=interaction.guild)
 
     async def on_timeout(self):
         if not self.chosen:

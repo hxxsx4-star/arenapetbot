@@ -44,7 +44,7 @@ class AdminEggGiveView(discord.ui.View):
 
         await save_legend_data(self.target.id, wrapper)
         await interaction.response.edit_message(content=f"✅ {self.target.display_name}님에게 `{self.pet_name}` ({self.rarity} - {pet_type}) 알을 성공적으로 지급했습니다!", view=None)
-        await send_log_embed(interaction.client, EGG_GIVE_LOG_CH, "🛠️ [관리자] 알 지급", f"대상: {self.target.mention}\n지급된 알: {self.pet_name} ({pet_type} - {self.rarity}급)", interaction.user, discord.Color.green())
+        await send_log_embed(interaction.client, EGG_GIVE_LOG_CH, "🛠️ [관리자] 알 지급", f"대상: {self.target.mention}\n지급된 알: {self.pet_name} ({pet_type} - {self.rarity}급)", interaction.user, discord.Color.green(), guild=interaction.guild)
 
 class AdminEggTakeView(discord.ui.View):
     def __init__(self, admin: discord.Member, target: discord.Member, pets_found: list, wrapper: dict):
@@ -70,7 +70,7 @@ class AdminEggTakeView(discord.ui.View):
 
         await save_legend_data(self.target.id, self.wrapper)
         await interaction.response.edit_message(content=f"✅ {self.target.display_name}님의 `{removed['name']} ({removed['rarity']} - {removed['type']})`(을)를 강제 회수했습니다.", view=None)
-        await send_log_embed(interaction.client, EGG_TAKE_LOG_CH, "🛠️ [관리자] 알 회수", f"대상: {self.target.mention}\n회수된 알: {removed['name']} ({removed['type']} - {removed['rarity']}급)", interaction.user, discord.Color.red())
+        await send_log_embed(interaction.client, EGG_TAKE_LOG_CH, "🛠️ [관리자] 알 회수", f"대상: {self.target.mention}\n회수된 알: {removed['name']} ({removed['type']} - {removed['rarity']}급)", interaction.user, discord.Color.red(), guild=interaction.guild)
 
 class AdminCog(commands.Cog):
     def __init__(self, bot):
@@ -103,7 +103,7 @@ class AdminCog(commands.Cog):
             wrapper['pets'].remove(removed)
             wrapper['active_idx'] = max(0, len(wrapper['pets']) - 1)
             await save_legend_data(유저.id, wrapper)
-            await send_log_embed(interaction.client, EGG_TAKE_LOG_CH, "🛠️ [관리자] 알 회수", f"대상: {유저.mention}\n회수된 알: {removed['name']} ({removed['type']} - {removed['rarity']}급)", interaction.user, discord.Color.red())
+            await send_log_embed(interaction.client, EGG_TAKE_LOG_CH, "🛠️ [관리자] 알 회수", f"대상: {유저.mention}\n회수된 알: {removed['name']} ({removed['type']} - {removed['rarity']}급)", interaction.user, discord.Color.red(), guild=interaction.guild)
             return await interaction.response.send_message(f"✅ `{removed['name']}`(을)를 강제 회수했습니다.", ephemeral=True)
         else:
             view = AdminEggTakeView(interaction.user, 유저, pets_found, wrapper)
@@ -115,7 +115,7 @@ class AdminCog(commands.Cog):
         if 개수 <= 0: return await interaction.response.send_message("개수는 1개 이상이어야 합니다.", ephemeral=True)
         await add_item(유저.id, 종류, 개수)
         await interaction.response.send_message(f"✅ {유저.display_name}님에게 `{종류}` {개수}개를 지급했습니다.", ephemeral=True)
-        await send_log_embed(interaction.client, ITEM_GIVE_LOG_CH, "🛠️ [관리자] 아이템 지급", f"대상: {유저.mention}\n아이템: {종류} x{개수}", interaction.user, discord.Color.green())
+        await send_log_embed(interaction.client, ITEM_GIVE_LOG_CH, "🛠️ [관리자] 아이템 지급", f"대상: {유저.mention}\n아이템: {종류} x{개수}", interaction.user, discord.Color.green(), guild=interaction.guild)
 
     @app_commands.command(name="아이템회수", description="[관리자] 유저의 아이템을 회수합니다.")
     @app_commands.default_permissions(administrator=True)
@@ -124,7 +124,7 @@ class AdminCog(commands.Cog):
         success = await consume_item(유저.id, 종류, 개수)
         if success:
             await interaction.response.send_message(f"✅ 회수 완료", ephemeral=True)
-            await send_log_embed(interaction.client, ITEM_TAKE_LOG_CH, "🛠️ [관리자] 아이템 회수", f"대상: {유저.mention}\n아이템: {종류} x{개수}", interaction.user, discord.Color.red())
+            await send_log_embed(interaction.client, ITEM_TAKE_LOG_CH, "🛠️ [관리자] 아이템 회수", f"대상: {유저.mention}\n아이템: {종류} x{개수}", interaction.user, discord.Color.red(), guild=interaction.guild)
         else: await interaction.response.send_message(f"❌ 부족합니다.", ephemeral=True)
 
     @app_commands.command(name="아이템확인", description="[관리자] 유저의 보관함을 확인합니다.")
@@ -256,7 +256,8 @@ class AdminCog(commands.Cog):
                 "🛠️ [관리자] 경험치 지급",
                 f"대상: {유저.mention}\n전설이: {알이름} ({data.get('type', '알 수 없음')} - {rarity}급)\n지급량: +{수량:,} XP\n결과 상태: {data['level']}성 ({data['exp']:,} XP)",
                 interaction.user,
-                discord.Color.green()
+                discord.Color.green(),
+                guild=interaction.guild
             )
         except Exception:
             traceback.print_exc()
