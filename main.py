@@ -9,6 +9,7 @@ import discord
 from discord.ext import commands
 
 from cogs.pokemon import config as pokemon_config, db as pokemon_db
+from utils.cmdexport import export_commands
 from utils.logs import ERROR_LOG_CH, init_log_queue
 
 # --- 설정 로드 ---
@@ -48,6 +49,8 @@ class PetBot(commands.Bot):
 
         synced = await self.tree.sync()
         print(f"🌀 총 {len(synced)}개의 커맨드를 동기화했습니다!")
+        n = export_commands(self, "petbot", "펫봇(포켓몬)")
+        print(f"📖 명령어 {n}개를 봇공지용으로 내보냈습니다.")
 
     async def on_ready(self):
         print(f"✅ 펫봇 로그인 성공: {self.user} (ID: {self.user.id})")
