@@ -1,10 +1,15 @@
-# main.py — 종합게임 아레나 펫봇 (초기화됨 / 독자 시스템용 뼈대)
+# main.py — 종합게임 아레나 펫봇 (포켓몬 시스템)
 import configparser
+import json
+import time
+import traceback
+import urllib.request
 
 import discord
 from discord.ext import commands
 
-from utils.logs import init_log_queue
+from cogs.pokemon import config as pokemon_config, db as pokemon_db
+from utils.logs import ERROR_LOG_CH, init_log_queue
 
 # --- 설정 로드 ---
 config = configparser.ConfigParser()
@@ -25,8 +30,15 @@ class PetBot(commands.Bot):
         init_log_queue()
         print("✅ 로그 큐 초기화 완료")
 
-        # 새 펫 시스템 cog를 여기에 추가하세요. 예: "cogs.mypet"
-        cogs_to_load: list[str] = []
+        await pokemon_db.init_db()
+        count = await pokemon_db.species_count()
+        print(f"✅ 포켓몬 DB 초기화 완료 (도감 {count}종)")
+        if count == 0:
+            print("⚠️ 도감이 비어 있습니다. `python scripts/seed_species.py` 로 시딩하세요.")
+
+        cogs_to_load: list[str] = [
+            "cogs.pokemon",   # 야생 스폰/포획 + 포켓몬함
+        ]
         for ext in cogs_to_load:
             try:
                 await self.load_extension(ext)
@@ -39,10 +51,72 @@ class PetBot(commands.Bot):
 
     async def on_ready(self):
         print(f"✅ 펫봇 로그인 성공: {self.user} (ID: {self.user.id})")
-        print("ℹ️ 초기화된 상태입니다. cogs/ 에 새 시스템을 추가하세요.")
+        if not pokemon_config.SPAWN_CHANNEL_IDS:
+            print("ℹ️ SPAWN_CHANNEL_IDS 가 비어 있어 야생 스폰이 꺼져 있습니다. "
+                  "(cogs/pokemon/config.py 에 채널 ID 추가 시 자동 활성화)")
+
+    async def on_error(self, event_method, *args, **kwargs):
+        # 이벤트 핸들러(on_message 등) 내부에서 발생한 예외는 봇을 죽이지 않고
+        # 여기로 넘어옵니다. 콘솔에도 남기고, 운영자가 바로 볼 수 있게 디스코드에도 알립니다.
+        err_text = traceback.format_exc()
+        print(f"🚨 [이벤트 오류: {event_method}]\n{err_text}")
+        channel = self.get_channel(ERROR_LOG_CH)
+        if channel:
+            try:
+                await channel.send(
+                    f"⚠️ **이벤트 처리 중 오류** (`{event_method}`)\n```py\n{err_text[-1800:]}\n```"
+                )
+            except Exception as e:
+                print(f"🚨 [오류 로그 전송 실패] {e}")
+
+
+def _report_crash_to_discord(token: str, error_text: str):
+    """봇 프로세스 자체가 죽는 크래시는 게이트웨이 연결이 끊긴 상태라
+    on_error 로 잡을 수 없습니다. 봇 토큰으로 REST API를 직접 호출해 알립니다."""
+    if not ERROR_LOG_CH or not token:
+        return
+    try:
+        content = f"🚨 **펫봇 프로세스가 예기치 않게 종료되었습니다 (자동 재시작 예정)**\n```py\n{error_text[-1800:]}\n```"
+        req = urllib.request.Request(
+            f"https://discord.com/api/v10/channels/{ERROR_LOG_CH}/messages",
+            data=json.dumps({"content": content}).encode("utf-8"),
+            headers={
+                "Authorization": f"Bot {token}",
+                "Content-Type": "application/json",
+                # Discord 는 기본 Python-urllib User-Agent 를 403 으로 막는다.
+                # 이게 없으면 크래시 알림이 조용히 실패한다.
+                "User-Agent": "DiscordBot (https://arenamatch.p-e.kr, 1.0)",
+            },
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:
+        print(f"🚨 [크래시 알림 전송 실패] {e}")
 
 
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("🚨 토큰이 비어 있습니다. config.ini 파일을 확인하세요.")
-    PetBot().run(TOKEN)
+
+    BACKOFF_START = 5
+    BACKOFF_MAX = 300
+    backoff = BACKOFF_START
+
+    while True:
+        bot = PetBot()
+        try:
+            bot.run(TOKEN)
+            # 예외 없이 run()이 끝났다면 close() 등으로 정상 종료된 것 → 재시작하지 않음
+            break
+        except discord.LoginFailure:
+            # 토큰이 잘못된 경우: 재시작해봐야 계속 실패하므로 바로 중단
+            print("🚨 로그인 실패: 토큰(config.ini / DISCORD_TOKEN)을 확인하세요.")
+            raise
+        except Exception:
+            err_text = traceback.format_exc()
+            print(f"🚨 [봇 종료 - 예외 발생]\n{err_text}")
+            _report_crash_to_discord(TOKEN, err_text)
+            print(f"⏳ {backoff}초 후 자동 재시작합니다...")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, BACKOFF_MAX)
+            continue

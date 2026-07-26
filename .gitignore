@@ -222,3 +222,6 @@ config.ini
 *.db
 stats.json
 log_queue.db
+
+# 시딩으로 생성되는 도감 DB (공유폴더에 보관)
+pokedex.db
