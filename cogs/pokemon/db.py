@@ -385,6 +385,15 @@ async def apply_level(uid: int, level: int, exp: int) -> None:
         await db.commit()
 
 
+async def set_nickname(uid: int, owner_id: int, nickname: str | None) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "UPDATE user_pokemon SET nickname = ? WHERE uid = ? AND owner_id = ?",
+            (nickname, uid, owner_id))
+        await db.commit()
+        return cur.rowcount > 0
+
+
 async def evolve(uid: int, new_species_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE user_pokemon SET species_id = ? WHERE uid = ?",

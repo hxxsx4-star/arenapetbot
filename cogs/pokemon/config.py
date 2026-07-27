@@ -63,6 +63,29 @@ CATCH_XP = 30
 # 이걸 두지 않으면 이브이·피카츄 같은 인기종이 영영 진화하지 못한다.
 DEFAULT_EVOLVE_LEVEL = 36
 
+# ───────── 일반 아이템 상점 ─────────
+# 볼과 달리 포켓몬에게 '사용'하는 아이템들. (/아이템상점 · /아이템사용)
+_ITEM_SPRITE = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/items/{}.png"
+ITEMS = {
+    "이상한사탕": {
+        "price": 1500, "emoji": "🍬", "kind": "level",
+        "desc": "포켓몬의 레벨을 1 올립니다",
+        "sprite": _ITEM_SPRITE.format("rare-candy"),
+    },
+    "경험치사탕": {
+        "price": 400, "emoji": "🍭", "kind": "exp", "value": 300,
+        "desc": "경험치를 300 지급합니다",
+        "sprite": _ITEM_SPRITE.format("exp-candy-m"),
+    },
+    "이름표": {
+        "price": 300, "emoji": "🏷️", "kind": "nickname",
+        "desc": "포켓몬에게 별명을 붙입니다",
+        "sprite": _ITEM_SPRITE.format("name-tag"),
+    },
+}
+ITEM_ORDER = ["이상한사탕", "경험치사탕", "이름표"]
+MAX_NICKNAME_LEN = 12
+
 # ───────── 전설·환상 특별 조우 ─────────
 # 전설(71종)·환상(23종)은 평소 야생에 나오지 않는다. 하루 몇 번 정해진 시각에만
 # 특별 조우로 등장시켜, 이때만 잡을 수 있게 한다.
