@@ -54,6 +54,42 @@ def _roll_catch(sp: dict, ball: str) -> bool:
     return random.random() < chance
 
 
+class BallChoiceView(discord.ui.View):
+    """어떤 볼을 던질지 고르는 개인용(에페메랄) 화면."""
+
+    def __init__(self, cog: "SpawnCatchCog", parent: "CatchView", owned: dict[str, int]):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.parent = parent
+        options = []
+        for name in config.BALL_ORDER:
+            info = config.BALLS[name]
+            n = owned.get(name, 0)
+            options.append(discord.SelectOption(
+                label=f"{name} — {n}개",
+                value=name,
+                emoji=info["emoji"],
+                description=info["desc"] + ("" if n else " (보유 없음)"),
+            ))
+        self.select = discord.ui.Select(placeholder="던질 볼을 고르세요", options=options)
+        self.select.callback = self.on_select
+        self.add_item(self.select)
+
+    async def on_select(self, interaction: discord.Interaction):
+        ball = self.select.values[0]
+        have = await db.get_item_amount(interaction.user.id, ball)
+        if have <= 0:
+            return await interaction.response.edit_message(
+                content=f"❌ **{ball}**이(가) 없습니다!\n"
+                        "`/볼받기` 로 하루 한 번 무료로 받거나 `/볼상점` 에서 구매하세요.",
+                view=None)
+        success, msg = await self.cog.attempt_catch(
+            interaction.channel, interaction.user, ball=ball)
+        await interaction.response.edit_message(content=msg, view=None)
+        if success:
+            self.parent.stop()
+
+
 class CatchView(discord.ui.View):
     def __init__(self, cog: "SpawnCatchCog", channel_id: int, spawn: ActiveSpawn):
         super().__init__(timeout=config.SPAWN_TIMEOUT_SEC)
@@ -63,10 +99,20 @@ class CatchView(discord.ui.View):
 
     @discord.ui.button(label="포획하기", style=discord.ButtonStyle.green, emoji="🎯")
     async def catch_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        success, msg = await self.cog.attempt_catch(interaction.channel, interaction.user)
-        await interaction.response.send_message(msg, ephemeral=True)
-        if success:
-            self.stop()
+        if self.spawn.resolved:
+            return await interaction.response.send_message(
+                "이미 다른 트레이너가 포획했습니다.", ephemeral=True)
+        # 첫 참여자에게만 스타터 볼을 지급한다.
+        await db.ensure_starter_balls(
+            interaction.user.id, config.DEFAULT_BALL, config.STARTER_BALL_AMOUNT)
+        owned = await db.list_items(interaction.user.id)
+        if not any(owned.get(b) for b in config.BALL_ORDER):
+            return await interaction.response.send_message(
+                "❌ 던질 볼이 하나도 없습니다!\n"
+                "`/볼받기` 로 하루 한 번 무료로 받거나 `/볼상점` 에서 구매하세요.", ephemeral=True)
+        await interaction.response.send_message(
+            f"어떤 볼을 던질까요? (야생 **{self.spawn.species['name_ko']}**)",
+            view=BallChoiceView(self.cog, self, owned), ephemeral=True)
 
     async def on_timeout(self):
         await self.cog.expire_spawn(self.channel_id, self.spawn)
@@ -143,24 +189,16 @@ class SpawnCatchCog(commands.Cog):
             if spawn.resolved:
                 return False, "이미 다른 트레이너가 포획했습니다."
 
-            # 첫 포획 시도라면 스타터 몬스터볼 지급
+            # 트레이너가 된 첫 순간에만 스타터 몬스터볼 지급 (한 번뿐)
             await db.ensure_starter_balls(
                 user.id, config.DEFAULT_BALL, config.STARTER_BALL_AMOUNT
             )
 
-            if ball:
-                if not await db.consume_item(user.id, ball, 1):
-                    return False, f"{ball}이(가) 없습니다! `/볼상점` 에서 구매하거나 `/볼받기` 로 무료 지급받으세요."
-            else:
-                for candidate in config.AUTO_BALL_ORDER:
-                    if await db.consume_item(user.id, candidate, 1):
-                        ball = candidate
-                        break
-                else:
-                    return False, (
-                        "볼이 없습니다! `/볼받기` 로 하루 한 번 무료로 받거나 "
-                        "`/볼상점` 에서 포인트로 구매하세요."
-                    )
+            if not ball:
+                return False, "던질 볼을 선택해주세요. (`/포획 볼:<종류>`)"
+            if not await db.consume_item(user.id, ball, 1):
+                return False, (f"❌ **{ball}**이(가) 없습니다!\n"
+                               "`/볼받기` 로 하루 한 번 무료로 받거나 `/볼상점` 에서 구매하세요.")
 
             if not _roll_catch(spawn.species, ball):
                 remaining = await db.get_item_amount(user.id, ball)
@@ -170,7 +208,11 @@ class SpawnCatchCog(commands.Cog):
             self.active_spawns.pop(channel_id, None)
 
             existing = await db.get_user_pokemon_count(user.id)
-            await db.add_user_pokemon(user.id, spawn.species["id"], is_partner=(existing == 0))
+            new_uid = await db.add_user_pokemon(
+                user.id, spawn.species["id"], is_partner=(existing == 0),
+                party_size=config.PARTY_SIZE)
+            # 잡자마자 약간의 경험치를 준다.
+            await db.add_exp(new_uid, config.CATCH_XP)
 
             sp = spawn.species
             if spawn.message:

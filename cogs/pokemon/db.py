@@ -62,6 +62,13 @@ async def init_db():
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_user_pokemon_owner ON user_pokemon (owner_id)"
         )
+        # 파티(데리고 다니는 6마리) 여부. 나머지는 박스에 보관된다.
+        try:
+            await db.execute("ALTER TABLE user_pokemon ADD COLUMN in_party INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass    # 이미 있으면 무시
+        # 기존 파트너는 파티에 있는 것으로 취급
+        await db.execute("UPDATE user_pokemon SET in_party = 1 WHERE is_partner = 1 AND in_party = 0")
         # 볼 이름 개편(일반볼 → 몬스터볼) 이전에 지급된 보유분을 옮긴다.
         await db.execute(
             """INSERT INTO user_items (user_id, item_name, amount)
@@ -150,12 +157,20 @@ async def species_count() -> int:
 # 유저 보유 포켓몬 관련 함수
 # ==========================================
 
-async def add_user_pokemon(owner_id: int, species_id: int, is_partner: bool = False) -> int:
+async def add_user_pokemon(owner_id: int, species_id: int, is_partner: bool = False,
+                           party_size: int = 6) -> int:
+    """새로 잡은 포켓몬을 등록한다. 파티에 자리가 남아 있으면 자동으로 파티에 넣는다."""
     async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM user_pokemon WHERE owner_id = ? AND in_party = 1",
+            (owner_id,)) as cur:
+            in_party = (await cur.fetchone())[0]
+        join = 1 if (is_partner or in_party < party_size) else 0
         cursor = await db.execute(
-            """INSERT INTO user_pokemon (owner_id, species_id, level, exp, is_partner, caught_at)
-               VALUES (?, ?, 1, 0, ?, ?)""",
-            (owner_id, species_id, int(is_partner), time.time()),
+            """INSERT INTO user_pokemon
+                 (owner_id, species_id, level, exp, is_partner, in_party, caught_at)
+               VALUES (?, ?, 1, 0, ?, ?, ?)""",
+            (owner_id, species_id, int(is_partner), join, time.time()),
         )
         await db.commit()
         return cursor.lastrowid
@@ -189,6 +204,90 @@ async def list_user_pokemon(owner_id: int, limit: int = 20, offset: int = 0):
 # ==========================================
 # 유저 아이템(볼 등) 관련 함수
 # ==========================================
+
+# ==========================================
+# 파티 / 레벨 / 진화
+# ==========================================
+
+async def get_party(owner_id: int) -> list[dict]:
+    """데리고 다니는 포켓몬(최대 6마리). 파트너가 맨 앞."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT up.uid, up.species_id, up.nickname, up.level, up.exp,
+                      up.is_partner, up.in_party, up.caught_at,
+                      s.name_ko, s.rarity, s.sprite_url, s.evolves_to, s.evolve_level
+               FROM user_pokemon up JOIN species s ON up.species_id = s.id
+               WHERE up.owner_id = ? AND up.in_party = 1
+               ORDER BY up.is_partner DESC, up.caught_at""",
+            (owner_id,),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_pokemon(uid: int, owner_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT up.*, s.name_ko, s.rarity, s.sprite_url, s.evolves_to, s.evolve_level
+               FROM user_pokemon up JOIN species s ON up.species_id = s.id
+               WHERE up.uid = ? AND up.owner_id = ?""",
+            (uid, owner_id),
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def set_party(uid: int, owner_id: int, value: bool) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "UPDATE user_pokemon SET in_party = ? WHERE uid = ? AND owner_id = ?",
+            (int(value), uid, owner_id))
+        if not value:
+            # 파티에서 빼면 파트너 자격도 잃는다.
+            await db.execute(
+                "UPDATE user_pokemon SET is_partner = 0 WHERE uid = ? AND owner_id = ?",
+                (uid, owner_id))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def set_partner(uid: int, owner_id: int) -> bool:
+    """파트너를 지정한다. 파티에 없으면 파티에도 넣는다."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT in_party FROM user_pokemon WHERE uid = ? AND owner_id = ?",
+            (uid, owner_id)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return False
+        await db.execute("UPDATE user_pokemon SET is_partner = 0 WHERE owner_id = ?", (owner_id,))
+        await db.execute(
+            "UPDATE user_pokemon SET is_partner = 1, in_party = 1 WHERE uid = ? AND owner_id = ?",
+            (uid, owner_id))
+        await db.commit()
+        return True
+
+
+async def add_exp(uid: int, amount: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE user_pokemon SET exp = exp + ? WHERE uid = ?", (amount, uid))
+        await db.commit()
+
+
+async def apply_level(uid: int, level: int, exp: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE user_pokemon SET level = ?, exp = ? WHERE uid = ?",
+                         (level, exp, uid))
+        await db.commit()
+
+
+async def evolve(uid: int, new_species_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE user_pokemon SET species_id = ? WHERE uid = ?",
+                         (new_species_id, uid))
+        await db.commit()
+
 
 async def get_item_amount(user_id: int, item_name: str) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -262,17 +361,27 @@ async def try_claim_daily(user_id: int, kind: str, today: str) -> bool:
 
 
 async def ensure_starter_balls(user_id: int, ball_name: str, amount: int):
-    """유저가 볼을 하나도 가진 적 없으면(행이 없으면) 초기 볼을 지급합니다."""
+    """트레이너가 된 첫 순간에만 초기 볼을 지급합니다.
+
+    예전에는 '볼 행이 있는지'로 판단했는데, consume_item 이 0개가 된 행을 지우기 때문에
+    볼을 다 쓰면 행이 사라져 5개가 무한으로 재지급됐다.
+    지급 여부를 user_daily 에 영구 기록해서 한 번만 나가도록 한다.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT 1 FROM user_items WHERE user_id = ? AND item_name = ?",
-            (user_id, ball_name),
+            "SELECT 1 FROM user_daily WHERE user_id = ? AND kind = 'starter_balls'",
+            (user_id,),
         ) as cursor:
-            row = await cursor.fetchone()
-        if row:
-            return
+            if await cursor.fetchone():
+                return
         await db.execute(
-            "INSERT INTO user_items (user_id, item_name, amount) VALUES (?, ?, ?)",
+            "INSERT OR REPLACE INTO user_daily (user_id, kind, last_date) "
+            "VALUES (?, 'starter_balls', 'given')",
+            (user_id,),
+        )
+        await db.execute(
+            "INSERT INTO user_items (user_id, item_name, amount) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id, item_name) DO UPDATE SET amount = amount + excluded.amount",
             (user_id, ball_name, amount),
         )
         await db.commit()
