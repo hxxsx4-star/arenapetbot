@@ -56,6 +56,10 @@ CHAT_XP_MIN, CHAT_XP_MAX = 8, 14
 CHAT_XP_COOLDOWN_SEC = 60
 # 파트너(⭐)는 더 많이 받는다.
 PARTNER_XP_MULTIPLIER = 2.0
+
+# 레벨업·진화 알림을 보낼 채널. 유저가 대화 중인 채널을 어지럽히지 않도록 한곳에 모은다.
+# 0 이면 알림을 보내지 않는다.
+LEVELUP_LOG_CH = 1531310908536524892
 # 포획 시 그 포켓몬이 받는 보너스 경험치
 CATCH_XP = 30
 

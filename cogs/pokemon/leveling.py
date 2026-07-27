@@ -74,10 +74,19 @@ class LevelingCog(commands.Cog):
         base = random.randint(config.CHAT_XP_MIN, config.CHAT_XP_MAX)
         for mon in party:
             gain = int(base * config.PARTNER_XP_MULTIPLIER) if mon["is_partner"] else base
-            await self._grant(message.channel, message.author, mon, gain)
+            await self._grant(message.guild, message.author, mon, gain)
 
-    async def _grant(self, channel, user, mon: dict, gain: int):
-        """경험치 지급 → 레벨업 → 진화까지 처리하고, 변화가 있으면 알린다."""
+    def _notify_channel(self):
+        """레벨업·진화 알림을 모아 보낼 채널."""
+        if not config.LEVELUP_LOG_CH:
+            return None
+        return self.bot.get_channel(config.LEVELUP_LOG_CH)
+
+    async def _grant(self, guild, user, mon: dict, gain: int):
+        """경험치 지급 → 레벨업 → 진화까지 처리하고, 변화가 있으면 알린다.
+
+        알림은 유저가 대화 중인 채널이 아니라 전용 채널(LEVELUP_LOG_CH)로 보낸다.
+        """
         level, exp, gained = apply_gain(mon["level"], mon["exp"], gain)
         await db.apply_level(mon["uid"], level, exp)
         if not gained:
@@ -92,6 +101,9 @@ class LevelingCog(commands.Cog):
                 await db.evolve(mon["uid"], target["id"])
                 evolved_to = target
 
+        channel = self._notify_channel()
+        if channel is None:
+            return
         try:
             if evolved_to:
                 embed = discord.Embed(
@@ -103,11 +115,11 @@ class LevelingCog(commands.Cog):
                 if evolved_to.get("sprite_url"):
                     embed.set_thumbnail(url=evolved_to["sprite_url"])
                 await channel.send(embed=embed)
-                self._log_evolution(channel, user, mon, evolved_to, level)
-            elif level % 5 == 0 or (mon["is_partner"] and gained):
-                # 알림이 도배되지 않도록 파트너이거나 5의 배수 레벨일 때만
+                self._log_evolution(guild, user, mon, evolved_to, level)
+            else:
                 embed = discord.Embed(
-                    description=(f"🎉 {user.mention} 님의 **{name}**이(가) "
+                    description=(f"🎉 {user.mention} 님의 "
+                                 f"{'⭐ ' if mon['is_partner'] else ''}**{name}**이(가) "
                                  f"**Lv.{level}** 이 되었습니다!"),
                     color=discord.Color.green())
                 if mon.get("sprite_url"):
@@ -116,8 +128,7 @@ class LevelingCog(commands.Cog):
         except discord.HTTPException:
             pass
 
-    def _log_evolution(self, channel, user, mon, target, level):
-        guild = getattr(channel, "guild", None)
+    def _log_evolution(self, guild, user, mon, target, level):
         if guild is None:
             return
         e = discord.Embed(
