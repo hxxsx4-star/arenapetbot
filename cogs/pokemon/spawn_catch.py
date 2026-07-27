@@ -17,6 +17,36 @@ class ActiveSpawn:
     message: Optional[discord.Message] = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     resolved: bool = False
+    legendary: bool = False     # 특별 조우 여부 (표시/타임아웃이 달라짐)
+
+
+def _kst_now():
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=9)))
+
+
+def _plan_today(day_start_epoch: float, now_epoch: float | None = None) -> list[float]:
+    """오늘의 특별 조우 시각을 정한다. (지정 시간대 안에서 무작위, 서로 30분 이상 간격)
+
+    봇이 한낮에 처음 켜지면 시간대 앞부분은 이미 지나 있다. 그대로 뽑으면 전부
+    '지난 시각'이 되어 그날은 조우가 한 번도 안 뜬다. 남은 시간 안에서만 고른다.
+    """
+    start = day_start_epoch + config.LEGENDARY_WINDOW_START_HOUR * 3600
+    end = day_start_epoch + config.LEGENDARY_WINDOW_END_HOUR * 3600
+    if now_epoch is not None:
+        start = max(start, now_epoch + 300)     # 최소 5분 뒤부터
+    if start >= end:
+        return []                                # 오늘은 시간대가 끝남
+    # 남은 시간이 짧으면 간격 조건을 줄여서라도 잡는다.
+    min_gap = min(1800, max(0, (end - start) / max(1, config.LEGENDARY_SPAWNS_PER_DAY)))
+    times = []
+    for _ in range(config.LEGENDARY_SPAWNS_PER_DAY):
+        for _try in range(80):
+            t = random.uniform(start, end)
+            if all(abs(t - o) >= min_gap for o in times):
+                times.append(t)
+                break
+    return sorted(times)
 
 
 def _format_types(sp: dict) -> str:
@@ -26,19 +56,33 @@ def _format_types(sp: dict) -> str:
     return " / ".join(names)
 
 
-def _build_spawn_embed(sp: dict) -> discord.Embed:
-    embed = discord.Embed(
-        title="🌿 야생 포켓몬이 나타났다!",
-        description=(
-            f"**{sp['name_ko']}** (No.{sp['id']:04d})\n"
-            f"타입: {_format_types(sp)}\n\n"
-            "먼저 아래 **포획하기** 버튼을 누르거나 `/포획`을 입력한 트레이너가 데려갑니다!"
-        ),
-        color=discord.Color.blurple(),
-    )
+def _build_spawn_embed(sp: dict, legendary: bool = False) -> discord.Embed:
+    if legendary:
+        embed = discord.Embed(
+            title="🌟 전설의 포켓몬이 모습을 드러냈다!",
+            description=(
+                f"**{sp['name_ko']}** (No.{sp['id']:04d})\n"
+                f"타입: {_format_types(sp)}\n\n"
+                "좀처럼 만날 수 없는 포켓몬입니다. 포획률이 매우 낮으니 "
+                "**하이퍼볼**이나 **마스터볼**을 준비하세요!\n"
+                f"기회는 {config.LEGENDARY_TIMEOUT_SEC // 60}분입니다."
+            ),
+            color=discord.Color.gold(),
+        )
+        embed.set_footer(text=f"⭐ 특별 조우 · 등급: {sp['rarity']}")
+    else:
+        embed = discord.Embed(
+            title="🌿 야생 포켓몬이 나타났다!",
+            description=(
+                f"**{sp['name_ko']}** (No.{sp['id']:04d})\n"
+                f"타입: {_format_types(sp)}\n\n"
+                "먼저 아래 **포획하기** 버튼을 누르거나 `/포획`을 입력한 트레이너가 데려갑니다!"
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text=f"등급: {sp['rarity']}")
     if sp.get("sprite_url"):
         embed.set_image(url=sp["sprite_url"])
-    embed.set_footer(text=f"등급: {sp['rarity']}")
     return embed
 
 
@@ -125,9 +169,14 @@ class SpawnCatchCog(commands.Cog):
         if config.SPAWN_CHANNEL_IDS:
             self.spawn_loop.change_interval(minutes=config.SPAWN_INTERVAL_MINUTES)
             self.spawn_loop.start()
+            self.legendary_loop.start()
+        # 웹 요청 큐는 스폰 채널 설정과 무관하게 항상 처리한다.
+        self.request_loop.start()
 
     def cog_unload(self):
         self.spawn_loop.cancel()
+        self.legendary_loop.cancel()
+        self.request_loop.cancel()
 
     @tasks.loop(minutes=5)
     async def spawn_loop(self):
@@ -149,16 +198,69 @@ class SpawnCatchCog(commands.Cog):
     async def before_spawn_loop(self):
         await self.bot.wait_until_ready()
 
-    async def _spawn_wild(self, channel: discord.abc.Messageable):
-        sp = await species.get_random_wild()
+    async def _spawn_wild(self, channel: discord.abc.Messageable, legendary: bool = False):
+        sp = await (species.get_random_legendary() if legendary else species.get_random_wild())
         if not sp:
             return
-        spawn = ActiveSpawn(species=sp)
+        spawn = ActiveSpawn(species=sp, legendary=legendary)
         view = CatchView(self, channel.id, spawn)
-        embed = _build_spawn_embed(sp)
-        msg = await channel.send(embed=embed, view=view)
+        if legendary:
+            view.timeout = config.LEGENDARY_TIMEOUT_SEC
+        embed = _build_spawn_embed(sp, legendary)
+        content = None
+        if legendary and config.LEGENDARY_PING_ROLE:
+            content = f"<@&{config.LEGENDARY_PING_ROLE}>"
+        msg = await channel.send(content=content, embed=embed, view=view)
         spawn.message = msg
         self.active_spawns[channel.id] = spawn
+
+    # ----- 전설·환상 특별 조우 -----
+    @tasks.loop(minutes=1)
+    async def legendary_loop(self):
+        """정해진 시각이 되면 전설/환상 포켓몬을 등장시킨다."""
+        now = _kst_now()
+        day = now.strftime("%Y-%m-%d")
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+        rows = await db.get_day_schedule(day)
+        if not rows:
+            from datetime import datetime
+            times = _plan_today(day_start, now.timestamp())
+            if not times:
+                return          # 오늘 시간대가 이미 끝남 — 내일 다시 계획
+            await db.set_day_schedule(day, times)
+            rows = await db.get_day_schedule(day)
+            when = ", ".join(
+                datetime.fromtimestamp(t, now.tzinfo).strftime("%H:%M") for t in times)
+            print(f"🌟 [전설 조우] 오늘({day}) 예정 시각: {when} (KST)")
+            await db.purge_old_legendary(day)      # 지난 날짜 기록 정리
+
+        ts = now.timestamp()
+        for row in rows:
+            if row["done"] or ts < row["at"]:
+                continue
+            # 시각이 지났는데 너무 오래 지났으면(봇이 꺼져 있었음) 건너뛴다
+            if ts - row["at"] > 1800:
+                await db.mark_legendary_done(day, row["idx"])
+                continue
+            for channel_id in config.SPAWN_CHANNEL_IDS:
+                channel = self.bot.get_channel(channel_id)
+                if channel is None or not is_target_guild(getattr(channel, "guild", None)):
+                    continue
+                # 일반 스폰이 떠 있으면 정리하고 특별 조우를 올린다.
+                cur = self.active_spawns.get(channel_id)
+                if cur is not None:
+                    await self.expire_spawn(channel_id, cur)
+                try:
+                    await self._spawn_wild(channel, legendary=True)
+                except discord.HTTPException as e:
+                    print(f"🚨 전설 조우 실패 (ch={channel_id}): {e}")
+            await db.mark_legendary_done(day, row["idx"])
+
+    @legendary_loop.before_loop
+    async def before_legendary_loop(self):
+        await self.bot.wait_until_ready()
+        await db.init_legendary_table()
 
     async def expire_spawn(self, channel_id: int, spawn: ActiveSpawn):
         current = self.active_spawns.get(channel_id)
@@ -244,6 +346,85 @@ class SpawnCatchCog(commands.Cog):
 
             remaining = await db.get_item_amount(user.id, ball)
             return True, f"✅ {ball}로 야생 **{sp['name_ko']}**을(를) 포획했습니다! (남은 {ball}: {remaining}개)"
+
+    # ----- 관리자 소환 -----
+    async def summon(self, species_name: str | None = None,
+                     legendary: bool = True) -> tuple[bool, str]:
+        """전설/환상(또는 지정 종)을 즉시 등장시킨다. (명령어·웹 공용)"""
+        sp = None
+        if species_name:
+            found = await db.find_species_by_name(species_name)
+            if not found:
+                return False, f"'{species_name}' 이름의 포켓몬을 찾지 못했습니다."
+            sp = found[0]
+        channels = []
+        for cid in config.SPAWN_CHANNEL_IDS:
+            ch = self.bot.get_channel(cid)
+            if ch is not None and is_target_guild(getattr(ch, "guild", None)):
+                channels.append(ch)
+        if not channels:
+            return False, "스폰 채널을 찾을 수 없습니다."
+
+        names = []
+        for ch in channels:
+            cur = self.active_spawns.get(ch.id)
+            if cur is not None:
+                await self.expire_spawn(ch.id, cur)
+            try:
+                if sp:
+                    spawn = ActiveSpawn(species=sp, legendary=legendary)
+                    view = CatchView(self, ch.id, spawn)
+                    if legendary:
+                        view.timeout = config.LEGENDARY_TIMEOUT_SEC
+                    msg = await ch.send(embed=_build_spawn_embed(sp, legendary), view=view)
+                    spawn.message = msg
+                    self.active_spawns[ch.id] = spawn
+                    names.append(sp["name_ko"])
+                else:
+                    await self._spawn_wild(ch, legendary=legendary)
+                    cur = self.active_spawns.get(ch.id)
+                    if cur:
+                        names.append(cur.species["name_ko"])
+            except discord.HTTPException as e:
+                return False, f"소환 실패: {e}"
+        return True, f"✨ {', '.join(names)} 등장! ({len(channels)}개 채널)"
+
+    @app_commands.command(name="전설소환",
+                          description="[관리자] 전설/환상 포켓몬을 즉시 등장시킵니다.")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.describe(이름="특정 포켓몬 이름 (비우면 전설·환상 중 무작위)")
+    async def summon_cmd(self, interaction: discord.Interaction, 이름: str | None = None):
+        if interaction.guild is None or not is_target_guild(interaction.guild):
+            return await interaction.response.send_message(
+                "이 명령어는 지정된 서버에서만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        ok, msg = await self.summon(이름, legendary=True)
+        await interaction.followup.send(("✅ " if ok else "❌ ") + msg, ephemeral=True)
+
+    # ----- 웹에서 들어온 요청 처리 -----
+    @tasks.loop(seconds=10)
+    async def request_loop(self):
+        try:
+            reqs = await db.fetch_pending_requests()
+        except Exception as e:
+            print(f"🚨 [요청 큐] 조회 실패: {e}")
+            return
+        for r in reqs:
+            try:
+                if r["kind"] == "summon":
+                    ok, msg = await self.summon(r["payload"] or None, legendary=True)
+                    await db.complete_request(r["id"], ("OK: " if ok else "FAIL: ") + msg)
+                    print(f"🌟 [웹 소환] {r['actor']} → {msg}")
+                else:
+                    await db.complete_request(r["id"], "알 수 없는 요청")
+            except Exception as e:
+                await db.complete_request(r["id"], f"오류: {e}")
+                print(f"🚨 [요청 큐] 처리 실패 id={r['id']}: {e}")
+
+    @request_loop.before_loop
+    async def before_request_loop(self):
+        await self.bot.wait_until_ready()
+        await db.init_request_queue()
 
     @app_commands.command(name="포획", description="현재 채널에 나타난 야생 포켓몬을 포획합니다.")
     @app_commands.describe(볼="사용할 볼 (지정하지 않으면 낮은 등급부터 자동 사용)")

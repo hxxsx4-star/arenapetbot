@@ -27,5 +27,14 @@ async def get_random_wild():
     return await db.get_species(species_id)
 
 
+async def get_random_legendary():
+    """특별 조우용 — 전설·환상 중에서 뽑는다. (평소 야생에는 나오지 않는 종)"""
+    from . import config
+    species_id = await db.get_random_species_id(config.LEGENDARY_SPAWN_WEIGHTS)
+    if species_id is None:
+        return None
+    return await db.get_species(species_id)
+
+
 async def get_by_id(species_id: int):
     return await db.get_species(species_id)

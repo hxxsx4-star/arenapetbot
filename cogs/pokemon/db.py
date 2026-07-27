@@ -206,6 +206,109 @@ async def list_user_pokemon(owner_id: int, limit: int = 20, offset: int = 0):
 # ==========================================
 
 # ==========================================
+# 전설·환상 특별 조우 일정
+# ==========================================
+
+async def init_legendary_table():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS legendary_events (
+                day TEXT, idx INTEGER, at REAL, done INTEGER DEFAULT 0,
+                PRIMARY KEY (day, idx)
+            )"""
+        )
+        await db.commit()
+
+
+async def get_day_schedule(day: str) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT day, idx, at, done FROM legendary_events WHERE day = ? ORDER BY idx",
+            (day,)) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def set_day_schedule(day: str, times: list[float]):
+    """그 날의 등장 시각을 저장한다. 이미 있으면 덮어쓰지 않는다."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        for i, t in enumerate(times):
+            await db.execute(
+                "INSERT OR IGNORE INTO legendary_events (day, idx, at, done) VALUES (?,?,?,0)",
+                (day, i, t))
+        await db.commit()
+
+
+async def mark_legendary_done(day: str, idx: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE legendary_events SET done = 1 WHERE day = ? AND idx = ?",
+                         (day, idx))
+        await db.commit()
+
+
+async def find_species_by_name(name: str, rarities: tuple = ()) -> list[dict]:
+    """이름으로 종을 찾는다. rarities 를 주면 그 등급만.
+
+    정확히 일치하는 이름을 맨 앞에 둔다.
+    (부분 일치만 쓰면 '뮤' 를 찾을 때 '뮤츠' 가 먼저 걸린다)
+    """
+    sql = "SELECT * FROM species WHERE name_ko LIKE ?"
+    params = [f"%{name}%"]
+    if rarities:
+        sql += f" AND rarity IN ({','.join('?' * len(rarities))})"
+        params += list(rarities)
+    sql += " ORDER BY CASE WHEN name_ko = ? THEN 0 ELSE 1 END, LENGTH(name_ko), id LIMIT 25"
+    params.append(name)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(sql, params) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+# ── 웹 등 외부에서 들어온 요청 큐 (봇이 주기적으로 처리) ──
+async def init_request_queue():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS admin_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT, payload TEXT, actor TEXT,
+                created_at REAL, done INTEGER DEFAULT 0, result TEXT
+            )"""
+        )
+        await db.commit()
+
+
+async def enqueue_request(kind: str, payload: str, actor: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "INSERT INTO admin_requests (kind, payload, actor, created_at, done) "
+            "VALUES (?,?,?,?,0)", (kind, payload, actor, time.time()))
+        await db.commit()
+        return cur.lastrowid
+
+
+async def fetch_pending_requests(limit: int = 10) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM admin_requests WHERE done = 0 ORDER BY id LIMIT ?", (limit,)) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def complete_request(req_id: int, result: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE admin_requests SET done = 1, result = ? WHERE id = ?",
+                         (result[:500], req_id))
+        await db.commit()
+
+
+async def purge_old_legendary(before_day: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM legendary_events WHERE day < ?", (before_day,))
+        await db.commit()
+
+
+# ==========================================
 # 파티 / 레벨 / 진화
 # ==========================================
 

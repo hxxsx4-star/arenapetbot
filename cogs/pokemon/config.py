@@ -62,3 +62,20 @@ CATCH_XP = 30
 # 진화 레벨이 정해지지 않은 종(진화의돌·교환 등 특수 조건)의 기본 진화 레벨.
 # 이걸 두지 않으면 이브이·피카츄 같은 인기종이 영영 진화하지 못한다.
 DEFAULT_EVOLVE_LEVEL = 36
+
+# ───────── 전설·환상 특별 조우 ─────────
+# 전설(71종)·환상(23종)은 평소 야생에 나오지 않는다. 하루 몇 번 정해진 시각에만
+# 특별 조우로 등장시켜, 이때만 잡을 수 있게 한다.
+LEGENDARY_SPAWNS_PER_DAY = 2
+# 등장 가능 시간대(KST). 새벽에 떠서 아무도 못 잡는 일이 없도록 제한한다.
+LEGENDARY_WINDOW_START_HOUR = 13
+LEGENDARY_WINDOW_END_HOUR = 24
+# 특별 조우는 도전 기회를 넉넉히 준다. (일반 스폰은 120초)
+LEGENDARY_TIMEOUT_SEC = 600
+# 등급별 등장 가중치 — 환상이 전설보다 훨씬 귀하다.
+LEGENDARY_SPAWN_WEIGHTS = {
+    "전설": 10,
+    "환상": 1,
+}
+# 특별 조우 알림에 붙일 역할 멘션 (0 이면 멘션 없음)
+LEGENDARY_PING_ROLE = 0
